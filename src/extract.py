@@ -114,7 +114,8 @@ def _read_jsonl_from_s3(s3_key: str) -> pd.DataFrame:
     s3=boto3.client("s3")
     response = s3.get_object(Bucket="kickz-empire-data", Key=s3_key)
     jsonl_content = response["Body"].read().decode("utf-8")
-    return(jsonl_content)
+    df = pd.read_json(StringIO(jsonl_content), lines=True)
+    return(df)
 
 
 def _read_partitioned_parquet_from_s3(s3_prefix: str) -> pd.DataFrame:
@@ -300,8 +301,7 @@ def extract_reviews() -> pd.DataFrame:
     Returns:
         pd.DataFrame: The reviews data.
     """
-    jsonl_content = _read_jsonl_from_s3("raw/reviews/reviews.jsonl")
-    df = pd.read_json(StringIO(jsonl_content), lines=True)
+    df = _read_jsonl_from_s3("raw/reviews/reviews.jsonl")
     print(f"✅ bronze_group6.reviews loaded {df.shape[0]} rows, {df.shape[1]} columns")
     _load_to_bronze(df, table_name="reviews", if_exists="replace")
     return df
