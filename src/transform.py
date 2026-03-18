@@ -7,7 +7,7 @@ This module reads tables from the Bronze schema, applies cleaning
 transformations, and loads the results into the Silver schema.
 
 Transformations applied:
-    - Remove internal columns (prefixed with `_`)
+    - Remove internal columns (prefixed with _)
     - Normalize data types
     - Remove PII (Personally Identifiable Information)
     - Validate values (statuses, amounts, etc.)
@@ -61,11 +61,14 @@ def _drop_internal_columns(df: pd.DataFrame) -> pd.DataFrame:
         Columns before: ['product_id', 'brand', '_internal_cost_usd', '_supplier_id']
         Columns after:  ['product_id', 'brand']
     """
-    # TODO: Filter and drop columns starting with '_'
+    # Filter and drop columns starting with '_'
     # Steps: 1. Find columns that start with '_' (list comprehension on df.columns)
     #        2. Drop them with df.drop(columns=...)
     #        3. Print how many were removed, then return
-    raise NotImplementedError("TODO: Implement _drop_internal_columns()")
+    cols_to_drop = [col for col in df.columns if col.startswith("_")]
+    df = df.drop(columns=cols_to_drop)
+    print(f"  Dropped {len(cols_to_drop)} internal columns: {cols_to_drop}")
+    return df
 
 
 def _load_to_silver(df: pd.DataFrame, table_name: str, if_exists: str = "replace"):
@@ -83,9 +86,8 @@ def _load_to_silver(df: pd.DataFrame, table_name: str, if_exists: str = "replace
         con=engine,
         schema=SILVER_SCHEMA,
         if_exists=if_exists,
-        index=False,
-    )
-    print(f"    ✅ {SILVER_SCHEMA}.{table_name} — {len(df)} rows loaded")
+        index=False,)
+    print(f" ✅ {SILVER_SCHEMA}.{table_name} — {len(df)} rows loaded")
 
 
 # ---------------------------------------------------------------------------
@@ -97,32 +99,35 @@ def transform_products() -> pd.DataFrame:
 
     Transformations:
         1. Drop internal columns (_internal_cost_usd, _supplier_id, etc.)
-        2. Parse `available_sizes_json`: it's a JSON string inside the CSV
+        2. Parse available_sizes_json: it's a JSON string inside the CSV
            → keep as-is for now (or validate)
-        3. Normalize `tags`: replace the '|' separator with ','
-        4. Ensure `price_usd` is a valid float (no negatives)
-        5. Convert `is_active` and `is_hype_product` to booleans
+        3. Normalize tags: replace the '|' separator with ','
+        4. Ensure price_usd is a valid float (no negatives)
+        5. Convert is_active and is_hype_product to booleans
 
     Returns:
         pd.DataFrame: The cleaned catalog.
     """
     print("  📦 Transform: products → dim_products")
+    
     df = _read_bronze("products")
 
-    # TODO: Step 1 — Drop internal columns (use the helper you wrote above)
+    # Step 1 — Drop internal columns
+    df = _drop_internal_columns(df)
 
-    # TODO: Step 2 — Normalize the 'tags' column
-    # The tags use '|' as separator — replace with ', ' for cleanliness
-    # Look at: .str.replace()
+    # Step 2 — Normalize tags (replace '|' with ', ')
+    df["tags"] = df["tags"].str.replace("|", ", ", regex=False)
 
-    # TODO: Step 3 — Validate price_usd (remove rows where price <= 0)
+    # Step 3 — Validate price_usd (remove rows where price <= 0)
+    df = df[df["price_usd"] > 0]
 
-    # TODO: Step 4 — Convert boolean columns (is_active, is_hype_product)
-    # Look at: .astype(bool)
+    # Step 4 — Convert boolean columns
+    df["is_active"] = df["is_active"].astype(bool)
+    df["is_hype_product"] = df["is_hype_product"].astype(bool)
 
-    # TODO: Step 5 — Load into Silver as "dim_products"
+    # Step 5 — Load into Silver
+    _load_to_silver(df, "dim_products")
 
-    raise NotImplementedError("TODO: Implement transform_products()")
     return df
 
 
@@ -147,16 +152,21 @@ def transform_users() -> pd.DataFrame:
     print("  👤 Transform: users → dim_users")
     df = _read_bronze("users")
 
-    # TODO: Step 1 — Drop internal columns (especially PII: passwords, IPs, fingerprints)
-
-    # TODO: Step 2 — Replace NULL loyalty_tier with 'none'
+    # Step 1 — Drop internal columns (especially PII: passwords, IPs, fingerprints)
+    df= _drop_internal_columns(df)
+    # Step 2 — Replace NULL loyalty_tier with 'none'
     # Look at: .fillna()
+    df["loyalty_tier"] = df["loyalty_tier"].fillna("none")
 
-    # TODO: Step 3 — Normalize emails (lowercase + strip whitespace)
+    # Step 3 — Normalize emails (lowercase + strip whitespace)
+    df["email"]= df["email"].str.lower().str.strip()
 
-    # TODO: Step 4 — Load into Silver as "dim_users"
+    # Step 4 — Mask phone (keep only country code)
+    df["phone"] = df["phone"].str.extract(r"(^\+\d+)")
 
-    raise NotImplementedError("TODO: Implement transform_users()")
+    # Step 5 — Load into Silver as "dim_users"
+    _load_to_silver(df,"dim_users")
+
     return df
 
 
@@ -179,21 +189,37 @@ def transform_orders() -> pd.DataFrame:
     print("  🛍️ Transform: orders → fct_orders")
     df = _read_bronze("orders")
 
-    # TODO: Step 1 — Drop internal columns
-
-    # TODO: Step 2 — Validate statuses
+    # Step 1 — Drop internal columns
+    df = _drop_internal_columns(df)
+    #  Step 2 — Validate statuses
     # Only keep rows with a valid status. The valid set is in the docstring above.
     # Look at: .isin() and boolean indexing
-
-    # TODO: Step 3 — Convert order_date to a proper datetime type
+    valid_status =["delivered", "shipped", "processing", "returned", "cancelled", "chargeback"]
+    df = df[df["status"].isin(valid_status)]
+    # Step 3 — Convert order_date to a proper datetime type
     # Look at: pd.to_datetime()
-
-    # TODO: Step 4 — Replace NULL coupon_code with empty string
+    df["order_date"] = pd.to_datetime(df["order_date"], errors="coerce")
+    df = df[df["order_date"].notna()]
+    # Step 4 — Replace NULL coupon_code with empty string
     # Look at: .fillna()
+    if all(col in df.columns for col in ["total_usd", "subtotal_usd", "discount_amount_usd","shipping_cost_usd", "tax_usd"]):
+        expected_total = (df["subtotal_usd"]
+            - df["discount_amount_usd"]
+            + df["shipping_cost_usd"]
+            + df["tax_usd"])
+        diff = (df["total_usd"] - expected_total).abs()
 
-    # TODO: Step 5 — Load into Silver as "fct_orders"
+        invalid = diff > 0.01
+        if invalid.any():
+            print(f"{invalid.sum()} inconsistent totals detected")
 
-    raise NotImplementedError("TODO: Implement transform_orders()")
+    # Step 5 — Replace NULL coupon_code
+    if "coupon_code" in df.columns:
+        df["coupon_code"] = df["coupon_code"].fillna("")
+
+    # Step 6 — Load into Silver
+    _load_to_silver(df, "fct_orders")
+
     return df
 
 
@@ -213,19 +239,22 @@ def transform_order_line_items() -> pd.DataFrame:
     print("  📋 Transform: order_line_items → fct_order_lines")
     df = _read_bronze("order_line_items")
 
-    # TODO: Step 1 — Drop internal columns
-
-    # TODO: Step 2 — Validate quantity > 0 (remove invalid rows)
-
-    # TODO: Step 3 — Verify line_total_usd ≈ unit_price_usd * quantity
+    # Step 1 — Drop internal columns
+    df = _drop_internal_columns(df)
+    # Step 2 — Validate quantity > 0 (remove invalid rows)
+    df = df[df['quantity'] > 0]
+    # Step 3 — Verify line_total_usd ≈ unit_price_usd * quantity
     # Compute the difference, flag rows where abs(diff) > 0.01, then clean up
     # This is a data quality check — print how many bad rows you find
+    total_expected = df['unit_price_usd'] * df['quantity']
+    difference = df['line_total_usd'] - total_expected
+    invalid_rows = df[abs(difference) > 0.01]
+    print(f"  {len(invalid_rows)} bad rows with line")
+    df = df[abs(difference) <= 0.01]
+    # Step 4 — Load into Silver as "fct_order_lines"
+    _load_to_silver(df, "fct_order_lines")
 
-    # TODO: Step 4 — Load into Silver as "fct_order_lines"
-
-    raise NotImplementedError("TODO: Implement transform_order_line_items()")
     return df
-
 
 # ---------------------------------------------------------------------------
 # Main function
@@ -243,11 +272,14 @@ def transform_all() -> dict[str, pd.DataFrame]:
 
     results = {}
 
-    # TODO: Call each transform_*() function and store the result in the dict
+    # Call each transform_*() function and store the result in the dict
     # There are 4 functions to call, each returns a DataFrame
     # Keys should match the Silver table names: dim_products, dim_users, fct_orders, fct_order_lines
+    results["dim_products"] = transform_products()
+    results["dim_users"] = transform_users()
+    results["fct_orders"] = transform_orders()
+    results["fct_order_lines"] = transform_order_line_items()
 
-    raise NotImplementedError("TODO: Implement transform_all()")
 
     print(f"\n  ✅ Transformation complete — {len(results)} tables in {SILVER_SCHEMA}")
     return results
